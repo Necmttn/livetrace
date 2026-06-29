@@ -44,6 +44,22 @@ import type { TraceEvent, TraceScope } from "../types.js";
 
 import { TraceTransportTag, type TraceTransport } from "../Sink.js";
 
+const MAX_TRACE_SCOPE_CACHE_ENTRIES = 10_000;
+
+const rememberScope = (scopeByTraceId: Map<string, TraceScope>, traceId: string, scope: TraceScope) => {
+    if (!scopeByTraceId.has(traceId) && scopeByTraceId.size >= MAX_TRACE_SCOPE_CACHE_ENTRIES) {
+        const oldestTraceId = scopeByTraceId.keys().next().value;
+        if (oldestTraceId !== undefined) scopeByTraceId.delete(oldestTraceId);
+    }
+    scopeByTraceId.set(traceId, scope);
+};
+
+const forgetCompletedScopes = (scopeByTraceId: Map<string, TraceScope>, events: ReadonlyArray<TraceEvent>) => {
+    for (const e of events) {
+        if (e._tag === "TraceEnd") scopeByTraceId.delete(e.traceId);
+    }
+};
+
 // ============================================================================
 // Factory form - wires @durable-streams/client directly
 // ============================================================================
@@ -107,33 +123,33 @@ export function makeDurableStreamsTransport(config: DurableStreamsTransportConfi
         send: (events) =>
             Effect.tryPromise({
                 try: async () => {
-                    for (const e of events) {
-                        if (e._tag === "TraceStart") scopeByTraceId.set(e.traceId, e.scope);
-                    }
-
-                    const grouped = new Map<string, { scope: TraceScope; batch: TraceEvent[] }>();
-                    for (const e of events) {
-                        const scope = scopeByTraceId.get(e.traceId);
-                        if (!scope) continue;
-                        const path = toPath(scope);
-                        let entry = grouped.get(path);
-                        if (!entry) {
-                            entry = { scope, batch: [] };
-                            grouped.set(path, entry);
+                    try {
+                        for (const e of events) {
+                            if (e._tag === "TraceStart") rememberScope(scopeByTraceId, e.traceId, e.scope);
                         }
-                        entry.batch.push(e);
-                    }
 
-                    await Promise.all(
-                        Array.from(grouped.values()).map(async ({ scope, batch }) => {
-                            const handle = await getHandle(scope);
-                            const ndjson = batch.map((ev) => JSON.stringify(ev)).join("\n") + "\n";
-                            await handle.append(ndjson);
-                        }),
-                    );
+                        const grouped = new Map<string, { scope: TraceScope; batch: TraceEvent[] }>();
+                        for (const e of events) {
+                            const scope = scopeByTraceId.get(e.traceId);
+                            if (!scope) continue;
+                            const path = toPath(scope);
+                            let entry = grouped.get(path);
+                            if (!entry) {
+                                entry = { scope, batch: [] };
+                                grouped.set(path, entry);
+                            }
+                            entry.batch.push(e);
+                        }
 
-                    for (const e of events) {
-                        if (e._tag === "TraceEnd") scopeByTraceId.delete(e.traceId);
+                        await Promise.all(
+                            Array.from(grouped.values()).map(async ({ scope, batch }) => {
+                                const handle = await getHandle(scope);
+                                const ndjson = batch.map((ev) => JSON.stringify(ev)).join("\n") + "\n";
+                                await handle.append(ndjson);
+                            }),
+                        );
+                    } finally {
+                        forgetCompletedScopes(scopeByTraceId, events);
                     }
                 },
                 catch: (err) => err,
@@ -190,7 +206,7 @@ const makeAppenderTransport: Effect.Effect<
         send: (events) =>
             Effect.gen(function* () {
                 for (const e of events) {
-                    if (e._tag === "TraceStart") scopeByTraceId.set(e.traceId, e.scope);
+                    if (e._tag === "TraceStart") rememberScope(scopeByTraceId, e.traceId, e.scope);
                 }
 
                 const grouped = new Map<string, { scope: TraceScope; batch: TraceEvent[] }>();
@@ -221,11 +237,8 @@ const makeAppenderTransport: Effect.Effect<
                             ),
                     { discard: true, concurrency: "unbounded" },
                 );
-
-                for (const e of events) {
-                    if (e._tag === "TraceEnd") scopeByTraceId.delete(e.traceId);
-                }
             }).pipe(
+                Effect.ensuring(Effect.sync(() => forgetCompletedScopes(scopeByTraceId, events))),
                 Effect.catchAllCause((cause) =>
                     Effect.logDebug("livetrace durable-streams (appender) send failed").pipe(
                         Effect.annotateLogs("cause", String(cause)),

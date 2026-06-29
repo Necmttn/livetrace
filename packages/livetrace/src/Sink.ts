@@ -47,7 +47,14 @@ export class TraceSink extends Context.Tag("@livetrace/TraceSink")<TraceSink, Tr
 export interface TraceSinkConfig {
     /** Flush interval in milliseconds. Default: 200 */
     readonly flushIntervalMs?: number;
+    /**
+     * Maximum number of events buffered while the transport is unavailable or
+     * slower than producers. Newer events are retained when the cap is reached.
+     */
+    readonly maxBufferEvents?: number;
 }
+
+const DEFAULT_MAX_BUFFER_EVENTS = 10_000;
 
 export const TraceSinkLive = (config?: TraceSinkConfig): Layer.Layer<TraceSink, never, TraceTransportTag> =>
     Layer.scoped(
@@ -55,6 +62,10 @@ export const TraceSinkLive = (config?: TraceSinkConfig): Layer.Layer<TraceSink, 
         Effect.gen(function* () {
             const transport = yield* TraceTransportTag;
             const intervalMs = config?.flushIntervalMs ?? 200;
+            const configuredMaxBufferEvents = config?.maxBufferEvents ?? DEFAULT_MAX_BUFFER_EVENTS;
+            const maxBufferEvents = Number.isFinite(configuredMaxBufferEvents)
+                ? Math.max(1, Math.trunc(configuredMaxBufferEvents))
+                : DEFAULT_MAX_BUFFER_EVENTS;
 
             let buffer: TraceEvent[] = [];
 
@@ -84,6 +95,9 @@ export const TraceSinkLive = (config?: TraceSinkConfig): Layer.Layer<TraceSink, 
             const handle: TraceSinkHandle = {
                 emit: (event) => {
                     buffer.push(event);
+                    if (buffer.length > maxBufferEvents) {
+                        buffer.splice(0, buffer.length - maxBufferEvents);
+                    }
                 },
             };
 
