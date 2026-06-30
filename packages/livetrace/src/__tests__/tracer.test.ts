@@ -5,8 +5,14 @@ import { describe, expect, it } from "vitest";
 import type { TraceEvent } from "../types.js";
 
 import { withTrace, step } from "../LiveTrace.js";
-import { TraceSinkLive, TraceTransportTag } from "../Sink.js";
+import { TraceSink, TraceSinkLive, TraceTransportTag } from "../Sink.js";
 import { LiveTraceLayer } from "../Tracer.js";
+import {
+    DurableStreamsAppenderLayer,
+    DurableStreamsAppenderTag,
+    StreamResolverTag,
+} from "../transports/durable-streams.js";
+import { spanEvent, traceStart } from "../types.js";
 
 /**
  * Creates a test transport that collects events in an array.
@@ -234,5 +240,103 @@ describe("LiveTraceLayer", () => {
         expect(spanEnd).toMatchObject({
             status: "error",
         });
+    });
+});
+
+describe("TraceSinkLive", () => {
+    it("bounds buffered events while the transport is stalled", async () => {
+        let releaseFirstSend: (() => void) | undefined;
+        let firstSendStarted: (() => void) | undefined;
+        const firstSendStartedPromise = new Promise<void>((resolve) => {
+            firstSendStarted = resolve;
+        });
+        const releaseFirstSendPromise = new Promise<void>((resolve) => {
+            releaseFirstSend = resolve;
+        });
+
+        const batches: ReadonlyArray<TraceEvent>[] = [];
+        let sendCount = 0;
+        const transport = {
+            send: (batch: ReadonlyArray<TraceEvent>) =>
+                Effect.promise(async () => {
+                    batches.push([...batch]);
+                    sendCount += 1;
+                    if (sendCount === 1) {
+                        firstSendStarted?.();
+                        await releaseFirstSendPromise;
+                    }
+                }),
+        };
+
+        const layer = TraceSinkLive({ flushIntervalMs: 10, maxBufferEvents: 5 }).pipe(
+            Layer.provide(Layer.succeed(TraceTransportTag, transport)),
+        );
+
+        await Effect.runPromise(
+            Effect.gen(function* () {
+                const sink = yield* TraceSink;
+                sink.emit(traceStart("blocked-flush", "Blocked flush", { type: "team", id: "team-1" }));
+
+                yield* Effect.promise(() => firstSendStartedPromise);
+
+                for (let i = 0; i < 20; i += 1) {
+                    sink.emit(spanEvent("blocked-flush", `span-${i}`, `event-${i}`));
+                }
+
+                releaseFirstSend?.();
+                yield* Effect.sleep("100 millis");
+            }).pipe(Effect.provide(layer), Effect.scoped),
+        );
+
+        const postStallBatches = batches.slice(1);
+        expect(postStallBatches.length).toBeGreaterThanOrEqual(1);
+        for (const batch of postStallBatches) {
+            expect(batch.length).toBeLessThanOrEqual(5);
+        }
+        expect(postStallBatches[0]!.map((event) => ("name" in event ? event.name : event._tag))).toEqual([
+            "event-15",
+            "event-16",
+            "event-17",
+            "event-18",
+            "event-19",
+        ]);
+    });
+});
+
+describe("DurableStreamsAppenderLayer", () => {
+    it("evicts the oldest trace scopes when the scope cache reaches its cap", async () => {
+        const appended: ReadonlyArray<Record<string, unknown>>[] = [];
+        const appender = {
+            appendEvents: (_streamId: string, events: ReadonlyArray<Record<string, unknown>>) =>
+                Effect.sync(() => {
+                    appended.push([...events]);
+                }),
+        };
+        const resolver = {
+            getOrCreateStreamId: () => Effect.succeed("trace/team/team-1"),
+        };
+        const supportLayer = Layer.merge(
+            Layer.succeed(DurableStreamsAppenderTag, appender),
+            Layer.succeed(StreamResolverTag, resolver),
+        );
+        const layer = DurableStreamsAppenderLayer.pipe(Layer.provide(supportLayer));
+
+        await Effect.runPromise(
+            Effect.gen(function* () {
+                const transport = yield* TraceTransportTag;
+                const events = Array.from({ length: 10_001 }, (_, i) =>
+                    traceStart(`trace-${i}`, `Trace ${i}`, { type: "team", id: "team-1" }),
+                );
+
+                yield* transport.send(events);
+            }).pipe(Effect.provide(layer)),
+        );
+
+        expect(appended).toHaveLength(1);
+        const traceIds = appended.flatMap((batch) => batch.map((event) => event["traceId"]));
+        expect(traceIds).toHaveLength(10_000);
+        expect(traceIds[0]).toBe("trace-1");
+        expect(traceIds.at(-1)).toBe("trace-10000");
+        expect(traceIds).not.toContain("trace-0");
     });
 });

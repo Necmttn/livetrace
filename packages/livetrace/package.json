@@ -1,6 +1,6 @@
 {
   "name": "livetrace",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Real-time Effect span streaming to frontend UIs. Stream traces from any backend to React with zero overhead.",
   "keywords": [
     "effect",
