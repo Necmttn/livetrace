@@ -29,7 +29,10 @@ export function useEventRate(eventCount: number, windowMs = 200): number {
             const now = Date.now();
             const dt = now - lastTimeRef.current;
             const current = countRef.current;
-            const delta = current - lastCountRef.current;
+            // The demo's visible trace list is TTL-pruned, so the aggregate
+            // event count can drop when completed traces age out. A rate cannot
+            // be negative; treat counter resets/prunes as zero new events.
+            const delta = Math.max(0, current - lastCountRef.current);
             lastCountRef.current = current;
             lastTimeRef.current = now;
             const eps = dt > 0 ? (delta * 1000) / dt : 0;
