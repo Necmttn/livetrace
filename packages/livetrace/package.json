@@ -75,7 +75,7 @@
   },
   "peerDependencies": {
     "@durable-streams/client": ">=0.2.0",
-    "effect": ">=3.10.0",
+    "effect": ">=4.0.0-beta.0",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
@@ -89,7 +89,7 @@
   "devDependencies": {
     "@durable-streams/client": "0.2.3",
     "@types/react": "^19.0.0",
-    "effect": "^3.18.0",
+    "effect": "4.0.0-beta.84",
     "react": "^19.0.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"

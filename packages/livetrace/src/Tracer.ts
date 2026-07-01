@@ -1,7 +1,8 @@
+import type { Context as EffectContext } from "effect/Context";
 import type { Span } from "effect/Tracer";
 
 /**
- * LiveTraceLayer — Effect Tracer decorator.
+ * LiveTraceLayer - Effect Tracer decorator.
  *
  * Wraps whatever base tracer is in DefaultServices (native or OTel).
  * Intercepts span creation within `LiveTrace.withTrace()` scopes
@@ -9,11 +10,11 @@ import type { Span } from "effect/Tracer";
  *
  * - Works standalone (no @effect/opentelemetry needed)
  * - Works alongside OTel (wraps the OTel tracer, both systems run)
- * - Zero FiberRef access in Tracer.span() — uses parent chain + attributes
+ * - Zero FiberRef access in Tracer.span() - uses parent chain + attributes
  *
  * ## Layer composition: why ordering matters
  *
- * `Layer.setTracer` modifies the `currentServices` FiberRef — each call
+ * Effect tracer layers modify the current services - each tracer install
  * overwrites the previous tracer. When composing via `Layer.provideMerge`,
  * the argument (`self`) is built FIRST. In a pipe chain:
  *
@@ -21,11 +22,11 @@ import type { Span } from "effect/Tracer";
  * X.pipe(Layer.provideMerge(A), Layer.provideMerge(B))
  * ```
  *
- * Build order: B (outermost self) → A (inner self) → X
+ * Build order: B (outermost self) -> A (inner self) -> X
  *
  * For LiveTraceLayer to wrap OTel's tracer, TelemetryLive must build
- * BEFORE LiveTraceLayer so that `Effect.tracerWith` captures the OTel
- * tracer. This means TelemetryLive must be OUTER (later in the pipe)
+ * BEFORE LiveTraceLayer so that this layer can capture the OTel tracer.
+ * This means TelemetryLive must be OUTER (later in the pipe)
  * and LiveTraceLayer must be INNER (earlier in the pipe):
  *
  * ```ts
@@ -47,11 +48,11 @@ import { isWrappedSpan, shouldExclude, WrappedSpan } from "./WrappedSpan.js";
 /**
  * Creates a LiveTraceLayer that wraps the current tracer.
  *
- * **Important**: This layer reads the current tracer from the FiberRef
- * at build time via `Effect.tracerWith`. For it to wrap the OTel tracer,
- * TelemetryLive (or any layer that calls `Layer.setTracer`) must be
- * built BEFORE this layer. In a `Layer.provideMerge` pipe chain, that
- * means TelemetryLive should appear AFTER (outer) this layer:
+ * **Important**: This layer reads the current tracer from current services
+ * at build time. For it to wrap the OTel tracer, TelemetryLive (or any
+ * layer that installs a tracer) must be built BEFORE this layer. In a
+ * `Layer.provideMerge` pipe chain, that means TelemetryLive should appear
+ * AFTER (outer) this layer:
  *
  * @example
  * ```ts
@@ -64,66 +65,62 @@ import { isWrappedSpan, shouldExclude, WrappedSpan } from "./WrappedSpan.js";
  * )
  * ```
  */
-export const LiveTraceLayer: Layer.Layer<never, never, TraceSink> = Layer.unwrapEffect(
-    Effect.gen(function* () {
-        // Capture the current tracer from DefaultServices FiberRef.
-        // When composed correctly (TelemetryLive outer, us inner),
-        // this captures the OTel tracer. When standalone, this
-        // captures the native tracer.
-        const baseTracer = yield* Effect.tracerWith(Effect.succeed);
-        const sink = yield* TraceSink;
+export const LiveTraceLayer: Layer.Layer<never, never, TraceSink> = Layer.unwrap(
+    Effect.map(Effect.all({ baseTracer: Effect.tracer, sink: TraceSink }), ({ baseTracer, sink }) =>
+        Layer.succeed(
+            Tracer.Tracer,
+            Tracer.make({
+                span(options) {
+                    // In Effect v4 the tracer receives a single `options` object and
+                    // span attributes arrive through `options.annotations` (a Context).
+                    const attributes = attributesFromAnnotations(options.annotations);
+                    const innerSpan = baseTracer.span(options);
 
-        const wrappedTracer = Tracer.make({
-            span(name, parent, context, links, startTime, kind, options) {
-                // Create the inner span via the base tracer (OTel or native)
-                const innerSpan = baseTracer.span(name, parent, context, links, startTime, kind, options);
+                    // Should we exclude this span from live tracing?
+                    if (shouldExclude(attributes)) {
+                        return innerSpan;
+                    }
 
-                // Should we exclude this span from live tracing?
-                if (shouldExclude(options?.attributes)) {
+                    // Check: is this the root of a live-traced scope?
+                    if (attributes[LIVE_TRACE] === true) {
+                        return createRootWrappedSpan(innerSpan, sink, attributes);
+                    }
+
+                    // Check: is the parent a WrappedSpan? (inside a traced scope)
+                    if (Option.isSome(options.parent) && isWrappedSpan(options.parent.value)) {
+                        const parentWrapped = options.parent.value;
+                        const wrapped = new WrappedSpan(innerSpan, sink, parentWrapped.liveTraceId, parentWrapped.liveScope);
+
+                        // IMPORTANT: span attributes (e.g. "ui.step") are applied by Effect
+                        // AFTER tracer.span() returns, so innerSpan.attributes is empty here.
+                        // We read them from the annotations Context instead.
+                        sink.emit({
+                            _tag: "SpanStart",
+                            traceId: parentWrapped.liveTraceId,
+                            spanId: innerSpan.spanId,
+                            parentSpanId: parentWrapped.spanId,
+                            name: options.name,
+                            attributes: { ...Object.fromEntries(innerSpan.attributes), ...attributes },
+                            timestamp: Date.now(),
+                        });
+
+                        return wrapped;
+                    }
+
+                    // Not in a traced scope, pass through unchanged
                     return innerSpan;
-                }
+                },
 
-                // Check: is this the root of a live-traced scope?
-                if (options?.attributes?.[LIVE_TRACE] === true) {
-                    return createRootWrappedSpan(innerSpan, sink, options.attributes);
-                }
-
-                // Check: is the parent a WrappedSpan? (inside a traced scope)
-                if (Option.isSome(parent) && isWrappedSpan(parent.value)) {
-                    const parentWrapped = parent.value;
-                    const wrapped = new WrappedSpan(innerSpan, sink, parentWrapped.liveTraceId, parentWrapped.liveScope);
-
-                    // IMPORTANT: options.attributes (e.g. "ui.step") are applied by Effect
-                    // AFTER tracer.span() returns. innerSpan.attributes is empty at this point.
-                    // We must include options.attributes directly.
-                    sink.emit({
-                        _tag: "SpanStart",
-                        traceId: parentWrapped.liveTraceId,
-                        spanId: innerSpan.spanId,
-                        parentSpanId: parentWrapped.spanId,
-                        name,
-                        attributes: { ...Object.fromEntries(innerSpan.attributes), ...options?.attributes },
-                        timestamp: Date.now(),
-                    });
-
-                    return wrapped;
-                }
-
-                // Not in a traced scope — pass through unchanged
-                return innerSpan;
-            },
-
-            context<X>(f: () => X, fiber: any): X {
-                // Delegate context propagation to the base tracer.
-                // This preserves OTel's OtelApi.context.with() behavior for
-                // W3C traceparent header propagation.
-                return baseTracer.context(f, fiber);
-            },
-        });
-
-        return Layer.setTracer(wrappedTracer);
-    }),
+                // Delegate context propagation to the base tracer when present.
+                // Preserves OTel's OtelApi.context.with() behavior for W3C
+                // traceparent header propagation.
+                ...(baseTracer.context !== undefined ? { context: baseTracer.context.bind(baseTracer) } : {}),
+            }),
+        ),
+    ),
 );
+
+const attributesFromAnnotations = (annotations: EffectContext<never>): Record<string, unknown> => Object.fromEntries(annotations.mapUnsafe);
 
 function createRootWrappedSpan(innerSpan: Span, sink: TraceSinkHandle, attributes: Record<string, unknown>): WrappedSpan {
     const traceId = attributes[LIVE_TRACE_ID] as string;
@@ -142,7 +139,7 @@ function createRootWrappedSpan(innerSpan: Span, sink: TraceSinkHandle, attribute
     });
 
     // Emit SpanStart for the root span itself
-    // Include attributes from the options — Effect applies them AFTER tracer.span() returns
+    // Include attributes from the annotations - Effect applies them AFTER tracer.span() returns
     sink.emit({
         _tag: "SpanStart",
         traceId,

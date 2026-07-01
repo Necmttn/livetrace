@@ -225,7 +225,7 @@ describe("LiveTraceLayer", () => {
                 Effect.provide(testLayer),
                 Effect.scoped,
                 Effect.tap(() => Effect.sleep("50 millis")),
-                Effect.catchAll(() => Effect.void),
+                Effect.catchCause(() => Effect.void),
             ),
         );
 

@@ -38,7 +38,7 @@ const TraceLive = LiveTraceLayer.pipe(
     Layer.provide(DurableStreamsTransportLayer({ baseUrl: ds.url })),
 );
 
-const LoggerLive = Logger.replaceScoped(Logger.defaultLogger, Effect.succeed(liveTraceLogger));
+const LoggerLive = Logger.layer([liveTraceLogger], { mergeWithExisting: true });
 const Runtime = Layer.merge(TraceLive, LoggerLive);
 
 Bun.serve({
@@ -65,7 +65,7 @@ Bun.serve({
                 runWorkflow({ docId, scopeId: scope, fail }).pipe(
                     Effect.provide(Runtime),
                     Effect.scoped,
-                    Effect.catchAll(() => Effect.void),
+                    Effect.catchCause(() => Effect.void),
                 ),
             );
 
