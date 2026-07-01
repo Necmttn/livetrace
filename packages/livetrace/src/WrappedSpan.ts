@@ -53,8 +53,8 @@ export class WrappedSpan implements Span {
     get parent(): Option<AnySpan> {
         return this.inner.parent;
     }
-    get context(): Context<never> {
-        return this.inner.context;
+    get annotations(): Context<never> {
+        return this.inner.annotations;
     }
     get status(): SpanStatus {
         return this.inner.status;
@@ -124,13 +124,18 @@ function normalizeLevel(level: string | undefined): "Debug" | "Info" | "Warning"
     if (!level) return undefined;
     switch (level) {
         case "DEBUG":
+        case "Debug":
             return "Debug";
         case "INFO":
+        case "Info":
             return "Info";
         case "WARNING":
         case "WARN":
+        case "Warning":
+        case "Warn":
             return "Warning";
         case "ERROR":
+        case "Error":
             return "Error";
         default:
             return undefined;

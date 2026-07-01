@@ -10,22 +10,23 @@
  *
  * Wire via `Logger.add(liveTraceLogger)` in the services layer.
  */
-import * as FiberRefs from "effect/FiberRefs";
-import * as HashMap from "effect/HashMap";
 import * as Logger from "effect/Logger";
+import * as References from "effect/References";
 
+import * as FiberRef from "./effect-fiber-ref.js";
 import { LiveSpanRef } from "./LiveTrace.js";
 import { isWrappedSpan } from "./WrappedSpan.js";
 
-export const liveTraceLogger = Logger.make(({ message, logLevel, context: fiberRefs, annotations }) => {
-    const span = FiberRefs.getOrDefault(fiberRefs, LiveSpanRef);
+export const liveTraceLogger = Logger.make(({ message, logLevel, fiber }) => {
+    const span = FiberRef.unsafeGet(LiveSpanRef);
     if (!span || !isWrappedSpan(span)) return;
 
     // Flatten message to string
     const msg = Array.isArray(message) ? message.join(" ") : String(message);
 
-    const attrs: Record<string, unknown> = { "effect.logLevel": logLevel.label };
-    for (const [k, v] of HashMap.entries(annotations)) {
+    const attrs: Record<string, unknown> = { "effect.logLevel": logLevel };
+    const annotations = fiber.getRef(References.CurrentLogAnnotations);
+    for (const [k, v] of Object.entries(annotations)) {
         attrs[k] = v;
     }
 

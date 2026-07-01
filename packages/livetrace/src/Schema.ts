@@ -11,7 +11,7 @@ import * as Schema from "effect/Schema";
 // ============================================================================
 
 export const TraceScopeSchema = Schema.Struct({
-    type: Schema.Literal("team", "org", "user"),
+    type: Schema.Literals(["team", "org", "user"]),
     id: Schema.String,
 });
 
@@ -33,7 +33,7 @@ export const SpanStartSchema = Schema.Struct({
     spanId: Schema.String,
     parentSpanId: Schema.optional(Schema.String),
     name: Schema.String,
-    attributes: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+    attributes: Schema.Record(Schema.String, Schema.Unknown),
     timestamp: Schema.Number,
 });
 
@@ -41,7 +41,7 @@ export const SpanEndSchema = Schema.Struct({
     _tag: Schema.Literal("SpanEnd"),
     traceId: Schema.String,
     spanId: Schema.String,
-    status: Schema.Literal("ok", "error"),
+    status: Schema.Literals(["ok", "error"]),
     durationMs: Schema.Number,
     timestamp: Schema.Number,
 });
@@ -51,20 +51,20 @@ export const SpanEventSchema = Schema.Struct({
     traceId: Schema.String,
     spanId: Schema.String,
     name: Schema.String,
-    level: Schema.optional(Schema.Literal("Debug", "Info", "Warning", "Error")),
-    attributes: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
+    level: Schema.optional(Schema.Literals(["Debug", "Info", "Warning", "Error"])),
+    attributes: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
     timestamp: Schema.Number,
 });
 
 export const TraceEndSchema = Schema.Struct({
     _tag: Schema.Literal("TraceEnd"),
     traceId: Schema.String,
-    status: Schema.Literal("completed", "failed"),
+    status: Schema.Literals(["completed", "failed"]),
     durationMs: Schema.Number,
     error: Schema.optional(Schema.String),
     timestamp: Schema.Number,
 });
 
-export const TraceEventSchema = Schema.Union(TraceStartSchema, SpanStartSchema, SpanEndSchema, SpanEventSchema, TraceEndSchema);
+export const TraceEventSchema = Schema.Union([TraceStartSchema, SpanStartSchema, SpanEndSchema, SpanEventSchema, TraceEndSchema]);
 
-export type TraceEventEncoded = Schema.Schema.Encoded<typeof TraceEventSchema>;
+export type TraceEventEncoded = Schema.Codec.Encoded<typeof TraceEventSchema>;

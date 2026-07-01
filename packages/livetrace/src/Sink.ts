@@ -23,7 +23,7 @@ export interface TraceTransport {
     readonly send: (events: ReadonlyArray<TraceEvent>) => Effect.Effect<void>;
 }
 
-export class TraceTransportTag extends Context.Tag("@livetrace/TraceTransport")<TraceTransportTag, TraceTransport>() {}
+export class TraceTransportTag extends Context.Service<TraceTransportTag, TraceTransport>()("@livetrace/TraceTransport") {}
 
 // ============================================================================
 // TraceSinkHandle — the synchronous interface used by WrappedSpan
@@ -38,7 +38,7 @@ export interface TraceSinkHandle {
 // TraceSink — Effect service managing buffer + flush lifecycle
 // ============================================================================
 
-export class TraceSink extends Context.Tag("@livetrace/TraceSink")<TraceSink, TraceSinkHandle>() {}
+export class TraceSink extends Context.Service<TraceSink, TraceSinkHandle>()("@livetrace/TraceSink") {}
 
 // ============================================================================
 // Layer — creates a TraceSink backed by a TraceTransport
@@ -57,7 +57,7 @@ export interface TraceSinkConfig {
 const DEFAULT_MAX_BUFFER_EVENTS = 10_000;
 
 export const TraceSinkLive = (config?: TraceSinkConfig): Layer.Layer<TraceSink, never, TraceTransportTag> =>
-    Layer.scoped(
+    Layer.effect(
         TraceSink,
         Effect.gen(function* () {
             const transport = yield* TraceTransportTag;
@@ -79,14 +79,14 @@ export const TraceSinkLive = (config?: TraceSinkConfig): Layer.Layer<TraceSink, 
             // Daemon fiber: flush every intervalMs
             yield* flush.pipe(
                 Effect.schedule(Schedule.spaced(intervalMs)),
-                Effect.catchAllCause((cause) => Effect.logDebug("livetrace flush daemon error").pipe(Effect.annotateLogs("cause", String(cause)))),
+                Effect.catchCause((cause) => Effect.logDebug("livetrace flush daemon error").pipe(Effect.annotateLogs("cause", String(cause)))),
                 Effect.forkScoped,
             );
 
             // Final flush on scope close
             yield* Effect.addFinalizer(() =>
                 flush.pipe(
-                    Effect.catchAllCause((cause) =>
+                    Effect.catchCause((cause) =>
                         Effect.logDebug("livetrace finalizer flush error").pipe(Effect.annotateLogs("cause", String(cause))),
                     ),
                 ),

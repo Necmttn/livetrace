@@ -37,6 +37,7 @@
  * Requires `@durable-streams/client` as a peer dependency.
  */
 import { DurableStream, DurableStreamError, type HeadersRecord } from "@durable-streams/client";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -154,7 +155,7 @@ export function makeDurableStreamsTransport(config: DurableStreamsTransportConfi
                 },
                 catch: (err) => err,
             }).pipe(
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                     Effect.logDebug("livetrace durable-streams send failed").pipe(Effect.annotateLogs("cause", String(cause))),
                 ),
             ),
@@ -186,12 +187,11 @@ export interface StreamResolver {
     readonly getOrCreateStreamId: (scope: TraceScope) => Effect.Effect<string>;
 }
 
-export class DurableStreamsAppenderTag extends Effect.Tag("@livetrace/DurableStreamsAppender")<
-    DurableStreamsAppenderTag,
-    DurableStreamsAppender
->() {}
+export class DurableStreamsAppenderTag extends Context.Service<DurableStreamsAppenderTag, DurableStreamsAppender>()(
+    "@livetrace/DurableStreamsAppender",
+) {}
 
-export class StreamResolverTag extends Effect.Tag("@livetrace/StreamResolver")<StreamResolverTag, StreamResolver>() {}
+export class StreamResolverTag extends Context.Service<StreamResolverTag, StreamResolver>()("@livetrace/StreamResolver") {}
 
 const makeAppenderTransport: Effect.Effect<
     TraceTransport,
@@ -239,7 +239,7 @@ const makeAppenderTransport: Effect.Effect<
                 );
             }).pipe(
                 Effect.ensuring(Effect.sync(() => forgetCompletedScopes(scopeByTraceId, events))),
-                Effect.catchAllCause((cause) =>
+                Effect.catchCause((cause) =>
                     Effect.logDebug("livetrace durable-streams (appender) send failed").pipe(
                         Effect.annotateLogs("cause", String(cause)),
                     ),
